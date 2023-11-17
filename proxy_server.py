@@ -1,10 +1,12 @@
 import socket
 import threading
-import keyboard  # Make sure to install this library
+import keyboard
 
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 8080
 BUFFER_SIZE = 4096
+
+MODE = 'DENYLIST'
 
 class ProxyServer:
 
@@ -14,10 +16,24 @@ class ProxyServer:
         self.port = PROXY_PORT
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
+        if (MODE == 'DENYLIST'):
+            self.deny_list = set()
+
+            with open('denylist.txt', 'r') as file:
+                for line in file:
+                    self.deny_list.add(line.strip())
+
+        elif (MODE == 'ALLOWLIST'):
+            self.allow_list = set()
+
+            with open('allow_list.txt', 'r') as file:
+                for line in file:
+                    self.deny_list.add(line.strip())
+
         server_thread = threading.Thread(target=self.start)
         server_thread.start()
 
-        # I couldnt get the server to stop consistently, but this seems to work
+        # I couldn't get the server to stop consistently, but this seems to work
         def stop_server():
             keyboard.wait("esc")
             self.server_socket.close()
@@ -62,6 +78,18 @@ class ProxyServer:
 
         print(f"{'-'*30}\nClient request: {request_dest} on port {request_port}\n{'-'*30}\n")
 
+
+        if (MODE == 'DENYLIST'):
+            if request_dest in self.deny_list:
+                print(f"Blocked {request_dest}")
+                client_socket.close()
+                return
+        elif (MODE == 'ALLOWLIST'):
+            if request_dest not in self.deny_list:
+                print(f"Blocked {request_dest}")
+                client_socket.close()
+                return
+
         # Forward request
         dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -77,7 +105,7 @@ class ProxyServer:
         # Get response and send to client
         try:
             response_data = dest_socket.recv(BUFFER_SIZE)
-            # print(f"Received from {request_data}:{request_port} \n{response_data}")
+            print(f"Received from {request_host}:{request_port}")
             client_socket.sendall(response_data)
         except Exception as e:
             # print(f"Error receiving response from {request_dest}:{request_port}")
