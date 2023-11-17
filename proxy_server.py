@@ -77,10 +77,11 @@ class ProxyServer:
         # Get response and send to client
         try:
             response_data = dest_socket.recv(BUFFER_SIZE)
-            print("Received response")
+            # print(f"Received from {request_data}:{request_port} \n{response_data}")
             client_socket.sendall(response_data)
         except Exception as e:
-            print(f"Error receiving response: {e}")
+            # print(f"Error receiving response from {request_dest}:{request_port}")
+            pass
 
         dest_socket.close()
         client_socket.close()
