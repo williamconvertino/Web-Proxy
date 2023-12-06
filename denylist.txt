@@ -2,3 +2,4 @@
 # Lines prefixed with # are comments.
 # To block a website, specify a domain name or IP address.
 neverssl.com
+unc.edu

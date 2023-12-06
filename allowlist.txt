@@ -1,4 +1,5 @@
 # Allow list for the proxy in ALLOWLIST mode.
 # Lines prefixed with # are comments.
 # To allow a website, specify a domain name or IP address.
-neverssl.com
+httpforever.com
+duke.edu

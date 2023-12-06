@@ -29,15 +29,19 @@ class ProxyCache():
         If it doesn't exist, return None, indicating the client should add it.
         """
         cur_time = time.time()
-        entry = self.cache.get(url)
-        if entry is None: # not in cache
+        if url not in self.cache: # not in cache
             return None
-        elif cur_time - entry.created > self.ttl: # in cache but too old: evict
+        
+        self.lock.acquire()
+        entry = self.cache[url]
+        if cur_time - entry.created > self.ttl: # in cache but too old: evict
             self.cur_size -= entry.size
             del self.cache[url]
+            self.lock.release()
             return None
         else: # in cache and recent enough: update LRU order & return
             self.cache.move_to_end(url)
+            self.lock.release()
             return entry.content
 
 
@@ -54,6 +58,7 @@ class ProxyCache():
         if new_entry.size > self.max_size: # new entry can never fit
             return False
 
+        self.lock.acquire(blocking=True)
         for url, entry in self.cache.items(): # evict expired entries
             if cur_time - entry.created > self.ttl:
                 self.cur_size -= entry.size
@@ -65,6 +70,7 @@ class ProxyCache():
 
         self.cache[new_url] = new_entry
         self.cur_size += new_entry.size
+        self.lock.release()
         return True
 
 
