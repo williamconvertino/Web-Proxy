@@ -1,1 +1,4 @@
+# Deny list for the proxy in DENYLIST mode.
+# Lines prefixed with # are comments.
+# To block a website, specify a domain name or IP address.
 neverssl.com

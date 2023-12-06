@@ -4,6 +4,8 @@ import socket
 import ssl
 import threading
 
+from proxy_cache import ProxyCache
+
 if os.name == 'nt':
     import keyboard
 
@@ -12,15 +14,19 @@ PROXY_PORT = 8080
 BUFFER_SIZE = 4096
 TIMEOUT = 0.25
 
+CACHE_SIZE = 2 ** 24
+CACHE_TTL = 60
+
 MODE = 'DENYLIST'
 
 class ProxyServer:
 
     def __init__(self):
-
+        """Set up the proxy server and start the main thread"""
         self.host = PROXY_HOST
         self.port = PROXY_PORT
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.cache = ProxyCache(max_size=CACHE_SIZE, ttl=CACHE_TTL)
         self.ssl_context = ssl.create_default_context()
 
         if (MODE == 'DENYLIST'):
@@ -54,7 +60,7 @@ class ProxyServer:
 
 
     def start(self):
-
+        """Main thread: accept incoming connections, assign to child threads"""
         print(f"Running on {self.host}:{self.port}")
 
         self.server_socket.bind((self.host, self.port))
@@ -71,7 +77,7 @@ class ProxyServer:
 
 
     def handle_client(self, client_socket):
-
+        """Child thread: apply allow/deny list, check cache, send to destination"""
         # Get the data from the request
         request_data = client_socket.recv(BUFFER_SIZE)
         # print(f"Data:\n{request_data.decode('utf-8')}")
@@ -85,14 +91,20 @@ class ProxyServer:
         if ((MODE == 'DENYLIST' and dest_ip in self.filter_list)
             or (MODE == 'ALLOWLIST' and dest_ip not in self.filter_list)):
             print(f"Blocked {dest[0]} ({dest_ip})")
-            # self.http_status(client_socket, 403, "Site Blocked")
+            self.http_status(client_socket, "403 Site Blocked")
             client_socket.close()
             return
 
-        if self.get_verb(request_data) == 'CONNECT': # HTTPS
+        request_verb, request_url = self.get_verb_url(request_data)
+        if request_verb == 'CONNECT': # HTTPS
             self.https_forward(client_socket, request_data, dest)
         else: # HTTP
-            self.http_forward(client_socket, request_data, dest)
+            content = self.cache.get(request_url)
+            if content is not None:
+                print(f"HTTP: cache hit {request_url}")
+                client_socket.sendall(content)
+            else:
+                self.http_forward(client_socket, request_data, dest)
 
         client_socket.close()
 
@@ -110,24 +122,29 @@ class ProxyServer:
             return
 
         dest_socket.sendall(request_data)
+        full_content = bytearray()
+        verb, url = self.get_verb_url(request_data)
 
         # Get response and send all chunks of it to client
         first = True
         while True:
             r_ready, _, x_ready = select.select([dest_socket], [], [dest_socket], TIMEOUT)
             if x_ready or not r_ready:
-                dest_socket.close()
-                client_socket.close()
-                return
+                print(f"HTTP: done1 {url}")
+                break
             content = dest_socket.recv(BUFFER_SIZE*2)
             if not content:
-                dest_socket.close()
-                client_socket.close()
-                return
+                print(f"HTTP: failed {url}")
+                break
             if first:
                 print(f"HTTP: received from {dest[0]}:{dest[1]}")
                 first = False
+            full_content.extend(content)
             client_socket.sendall(content)
+
+        self.cache.insert(url, full_content)
+        dest_socket.close()
+        client_socket.close()
 
 
     def https_forward(self, client_socket, request_data, dest):
@@ -142,6 +159,7 @@ class ProxyServer:
             client_socket.close()
             return
         self.http_status(client_socket, "200 OK")
+        verb, url = self.get_verb_url(request_data)
 
         both_sockets = [client_socket, dest_socket]
         first = True
@@ -151,6 +169,7 @@ class ProxyServer:
             if x_ready or not r_ready:
                 dest_socket.close()
                 client_socket.close()
+                print(f"HTTPS: done1 {url}")
                 return
             for sock1 in r_ready: # for each one ready to send, forward its data
                 sock2 = dest_socket if sock1 is client_socket else client_socket
@@ -158,6 +177,7 @@ class ProxyServer:
                 if not content:
                     dest_socket.close()
                     client_socket.close()
+                    print(f"HTTPS: failed {url}")
                     return
                 if first and sock1 is dest_socket:
                     print(f"HTTPS: received from {dest[0]}:{dest[1]}")
@@ -170,13 +190,15 @@ class ProxyServer:
         client_socket.sendall(f"HTTP/1.1 {status_msg}\r\n\r\n".encode())
 
 
-    def get_verb(self, request_data):
+    def get_verb_url(self, request_data):
         """
-        Determine the protocol (HTTP = GET, POST etc; HTTPS = CONNECT) based on
-        the request's HTTP verb. Return the verb and the protocol's default port.
+        Given a request, find the destination URL (HTTP) or domain (HTTPS) and
+        the HTTP verb involved. Return (verb, url).
+        HTTPS proxy requests follow the form "CONNECT domain_name", so the full
+        URL is not available.
         """
-        verb = request_data.split(b' ', maxsplit=1)[0].decode()
-        return verb, (443 if verb == 'CONNECT' else 80)
+        ret = request_data.split(b' ', maxsplit=2)
+        return ret[0].decode(), ret[1].decode()
 
 
     def get_host(self, request_data):
@@ -186,7 +208,7 @@ class ProxyServer:
         host = request_data[host_start:host_end].decode("utf-8")
         host_s = host.split(':')
         default_port = 80
-        if self.get_verb(request_data) == 'CONNECT':
+        if self.get_verb_url(request_data)[0] == 'CONNECT':
             default_port = 443
         return (host_s[0], (int(host_s[1]) if len(host_s) > 1 else default_port))
 
