@@ -3,22 +3,16 @@ import select
 import socket
 import ssl
 import threading
-
+from log import log
 from proxy_cache import ProxyCache
+from dynamic_ip_content_filter import DynamicIpFilter
 
 if os.name == 'nt':
     import keyboard
 
-# Debug level - print out everything from lower values PLUS ...
-# 0: basic messages (client request, blocked, connection failed)
-# 1: more error/exception details
-# 2: detailed filtering info
-# 3: detailed connection/cache info
-DEBUG_LEVEL = 1
-
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 8080
-BUFFER_SIZE = 4096 # bytes
+BUFFER_SIZE = 8192 # bytes
 TIMEOUT = 0.25 # seconds
 
 CACHE_SIZE = 2 ** 24 # bytes
@@ -33,8 +27,11 @@ class ProxyServer:
         self.host = PROXY_HOST
         self.port = PROXY_PORT
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        
         self.cache = ProxyCache(max_size=CACHE_SIZE, ttl=CACHE_TTL)
         self.ssl_context = ssl.create_default_context()
+
+        self.dynamic_ip_filter = DynamicIpFilter()
 
         if (MODE == 'DENYLIST'):
             self.filter_list = self.read_filter_list('denylist.txt')
@@ -91,14 +88,28 @@ class ProxyServer:
         request_verb, request_url = self.get_verb_url(request_data)
 
         # Get the destination tuple (host, port) and its IP for filtering
-        dest = self.get_host(request_data)
-        dest_ip = socket.gethostbyname(dest[0])
-        self.log(0, f"{'-'*30}\nClient request: {request_verb} {request_url} ({dest_ip}) port {dest[1]}\n{'-'*30}\n")
+        try:
+            dest = self.get_host(request_data)
+            dest_ip = socket.gethostbyname(dest[0])
+            log(0, f"Client request: {request_verb} {request_url} ({dest_ip}) port {dest[1]}")
+        except Exception as e:
+            log(0, f"Could not get host for {request_verb} {request_url}")
+            log(-1, str(e))
+            client_socket.close()
+            return
+
 
         # Check if the destination is blocked, close the connection if it is
         if ((MODE == 'DENYLIST' and dest_ip in self.filter_list)
             or (MODE == 'ALLOWLIST' and dest_ip not in self.filter_list)):
-            self.log(0, f"Blocked {dest[0]} ({dest_ip})")
+            log(2, f"Blocked {dest[0]} ({dest_ip}) with {MODE}")
+            self.http_status(client_socket, "403 Site Blocked")
+            client_socket.close()
+            return
+
+        # Use the dynamic domain checker to ensure the domain is safe
+        if (self.dynamic_ip_filter.FilterIp(dest_ip)):
+            log(3, f"Blocked {dest[0]} ({dest_ip}) with dynamic filter")
             self.http_status(client_socket, "403 Site Blocked")
             client_socket.close()
             return
@@ -108,7 +119,7 @@ class ProxyServer:
         else: # HTTP
             content = self.cache.get(request_url)
             if content is not None:
-                self.log(3, f"HTTP: cache hit {request_url}")
+                log(1, f"HTTP: cache hit {request_url}")
                 client_socket.sendall(content)
             else:
                 self.http_forward(client_socket, request_data, dest)
@@ -124,8 +135,8 @@ class ProxyServer:
         try:
             dest_socket.connect(dest)
         except Exception as e:
-            self.log(0, f"HTTP: {verb} {url} - could not connect to port {dest[1]}")
-            self.log(1, str(e))
+            log(0, f"HTTP: {verb} {url} - could not connect to port {dest[1]}")
+            log(-1, str(e))
             self.http_status(client_socket, "502 Connection Error")
             client_socket.close()
             return
@@ -138,14 +149,14 @@ class ProxyServer:
         while True:
             r_ready, _, x_ready = select.select([dest_socket], [], [dest_socket], TIMEOUT)
             if x_ready or not r_ready:
-                self.log(3, f"HTTP: done receiving {url}")
+                log(1, f"HTTP: done receiving {url}")
                 break
             content = dest_socket.recv(BUFFER_SIZE*2)
             if not content:
-                self.log(3, f"HTTP: failed to receive {url}")
+                log(1, f"HTTP: failed to receive {url}")
                 break
             if first:
-                self.log(3, f"HTTP: receiving from {dest[0]}:{dest[1]}")
+                log(1, f"HTTP: receiving from {dest[0]}:{dest[1]}")
                 first = False
             full_content.extend(content)
             client_socket.sendall(content)
@@ -161,8 +172,8 @@ class ProxyServer:
         try:
             dest_socket.connect(dest)
         except Exception as e:
-            self.log(0, f"HTTPS: could not connect to {dest[0]}:{dest[1]}")
-            self.log(1, str(e))
+            log(0, f"HTTPS: could not connect to {dest[0]}:{dest[1]}")
+            log(-1, str(e))
             self.http_status(client_socket, "502 Connection Error")
             client_socket.close()
             return
@@ -177,7 +188,7 @@ class ProxyServer:
             if x_ready or not r_ready:
                 dest_socket.close()
                 client_socket.close()
-                self.log(3, f"HTTPS: done receiving {dest[0]}:{dest[1]}")
+                log(1, f"HTTPS: done receiving {dest[0]}:{dest[1]}")
                 return
             for sock1 in r_ready: # for each one ready to send, forward its data
                 sock2 = dest_socket if sock1 is client_socket else client_socket
@@ -185,10 +196,10 @@ class ProxyServer:
                 if not content:
                     dest_socket.close()
                     client_socket.close()
-                    self.log(3, f"HTTPS: failed to receive {dest[0]}:{dest[1]}")
+                    log(1, f"HTTPS: failed to receive {dest[0]}:{dest[1]}")
                     return
                 if first and sock1 is dest_socket:
-                    self.log(3, f"HTTPS: receiving from {dest[0]}:{dest[1]}")
+                    log(1, f"HTTPS: receiving from {dest[0]}:{dest[1]}")
                     first = False
                 sock2.sendall(content)
 
@@ -233,18 +244,8 @@ class ProxyServer:
             for line in file:
                 if not line.startswith('#'):
                     filter.update(socket.gethostbyname_ex(line.strip())[2])
-        self.log(2, f"Initialized {MODE} with {len(filter)} entries")
+        log(2, f"Initialized {MODE} with {len(filter)} entries")
         return filter
-
-
-    def log(self, level, msg):
-        """
-        Print a message to standard output with specified "debug level" - the
-        message is only printed if the global DEBUG_LEVEL is at least as high as
-        the level parameter.
-        """
-        if level <= DEBUG_LEVEL:
-            print(msg)
 
 
 if __name__ == "__main__":
