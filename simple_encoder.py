@@ -46,6 +46,9 @@ def decode_file(filename):
         file.writelines(decoded_lines)
 
 if __name__ == "__main__":
-    filename = sys.argv[1]
+    filename = "banned_phrases.txt"
+    
+    if (len(sys.argv) > 1):
+        filename = sys.argv[1]
+    
     encode_file(filename)
-    decode_file(filename)

@@ -3,12 +3,27 @@ import requests
 import re
 from log import log
 from bs4 import BeautifulSoup
+from simple_encoder import decode_word
 
 class DynamicURLFilter:
     def __init__(self):
         self.trust_level_map = {}
         self.unverifyable_URLs = set()
-        self.banned_phrases = ["transition", "william"]
+        self.banned_phrases = []
+        
+        with open('banned_phrases.txt', 'r') as file:
+            lines = file.readlines()
+        
+        for line in lines:
+            if line != '' and line != '\n':
+                self.banned_phrases.append(line.strip().lower())
+
+        with open('banned_phrases_encoded.txt', 'r') as file:
+            lines = file.readlines()
+        
+        for line in lines:
+            if line != '' and line != '\n':
+                self.banned_phrases.append(decode_word(line.strip()).lower())
 
     def SetTrustLevel(self, request_url, trust_level):
         self.trust_level_map[request_url] = max(-10, min(10, trust_level))

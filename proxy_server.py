@@ -21,6 +21,8 @@ CACHE_TTL = 60 # seconds
 
 MODE = 'DENYLIST'
 
+DYNAMIC_FILTER = False
+
 class ProxyServer:
 
     def __init__(self):
@@ -109,8 +111,9 @@ class ProxyServer:
             return
         
         # Use the dynamic domain checker to ensure the domain is safe
-        if (self.dynamic_url_filter.FilterURL(request_url)):
+        if (DYNAMIC_FILTER and self.dynamic_url_filter.FilterURL(request_url)):
             # log(3, f"Blocked {dest[0]} ({dest_ip}) with dynamic filter")
+            print(f"BLOCK {request_url}")
             self.http_status(client_socket, "403 Site Blocked")
             client_socket.close()
             return
