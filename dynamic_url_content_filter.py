@@ -8,7 +8,7 @@ class DynamicURLFilter:
     def __init__(self):
         self.trust_level_map = {}
         self.unverifyable_URLs = set()
-        self.banned_phrases = ["transition", "newspaper "]
+        self.banned_phrases = ["transition", "william"]
 
     def SetTrustLevel(self, request_url, trust_level):
         self.trust_level_map[request_url] = max(-10, min(10, trust_level))
@@ -18,7 +18,7 @@ class DynamicURLFilter:
             headers = {
                 'internal-proxy-request': 'true'
             }
-            resp = requests.get(request_url, headers=headers, timeout=5)
+            resp = requests.get(request_url, headers=headers, timeout=5, proxies = {"http": "", "https": "",})
             
             if resp.status_code == 200: 
                 soup = BeautifulSoup(resp.text, 'html.parser')
@@ -35,10 +35,13 @@ class DynamicURLFilter:
         
         except Exception as e:
             # log(3, f"No response from {request_url}")
-            # log(-1, f"[ERR IN VALIDATION REQUEST] - {e}")
+            log(-1, f"[ERR IN VALIDATION REQUEST] - {e}")
             return None
 
     def FilterURL(self, request_url):
+
+        request_url = self.reform_url(request_url)
+
         if request_url in self.unverifyable_URLs:
             # log(3, f"Item bypassed (unable to verify) - [{request_url}]")
             return False
@@ -80,3 +83,9 @@ class DynamicURLFilter:
             log(3, f"Trust level {trust_level}: Failed with content check  - [{request_url}]")
             self.SetTrustLevel(request_url, trust_level - 1)
             return True
+        
+    def reform_url(self, url):
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = "https://" + url
+        
+        return url

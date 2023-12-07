@@ -99,15 +99,6 @@ class ProxyServer:
             log(-1, f"[ERR IN READING HOST NAME] - {str(e)}")
             client_socket.close()
             return
-
-        # Allows internal requests to bypass filters
-        if (b"internal-proxy-request" in request_data):
-            if request_verb == 'CONNECT':
-                self.https_forward(client_socket, request_data, dest)
-            else:
-                self.http_forward(client_socket, request_data, dest)
-            client_socket.close()
-            return
     
         # Check if the destination is blocked, close the connection if it is
         if ((MODE == 'DENYLIST' and dest_ip in self.filter_list)
