@@ -3,9 +3,10 @@ import select
 import socket
 import ssl
 import threading
+import requests
 from log import log
 from proxy_cache import ProxyCache
-from dynamic_ip_content_filter import DynamicIpFilter
+from dynamic_url_content_filter import DynamicURLFilter
 
 if os.name == 'nt':
     import keyboard
@@ -31,7 +32,7 @@ class ProxyServer:
         self.cache = ProxyCache(max_size=CACHE_SIZE, ttl=CACHE_TTL)
         self.ssl_context = ssl.create_default_context()
 
-        self.dynamic_ip_filter = DynamicIpFilter()
+        self.dynamic_url_filter = DynamicURLFilter()
 
         if (MODE == 'DENYLIST'):
             self.filter_list = self.read_filter_list('denylist.txt')
@@ -73,18 +74,19 @@ class ProxyServer:
         while True:
             try:
                 client_socket, addr = self.server_socket.accept()
+                client_socket.settimeout(5)
                 proxy_thread = threading.Thread(target=self.handle_client, args=(client_socket,))
                 proxy_thread.start()
             except Exception as e:
-                # This might cause issues later, but this stops it from showing errors every time I stop the server
-                break
-
+                log(-1, f"[ERR IN MAIN LOOP] - {str(e)}")
+                return
 
     def handle_client(self, client_socket):
+        
         """Child thread: apply allow/deny list, check cache, send to destination"""
         # Get the data from the request
-        request_data = client_socket.recv(BUFFER_SIZE)
-        # print(f"Data:\n{request_data.decode('utf-8')}")
+        request_data = client_socket.recv(BUFFER_SIZE)            
+        
         request_verb, request_url = self.get_verb_url(request_data)
 
         # Get the destination tuple (host, port) and its IP for filtering
@@ -94,11 +96,19 @@ class ProxyServer:
             log(0, f"Client request: {request_verb} {request_url} ({dest_ip}) port {dest[1]}")
         except Exception as e:
             log(0, f"Could not get host for {request_verb} {request_url}")
-            log(-1, str(e))
+            log(-1, f"[ERR IN READING HOST NAME] - {str(e)}")
             client_socket.close()
             return
 
-
+        # Allows internal requests to bypass filters
+        if (b"internal-proxy-request" in request_data):
+            if request_verb == 'CONNECT':
+                self.https_forward(client_socket, request_data, dest)
+            else:
+                self.http_forward(client_socket, request_data, dest)
+            client_socket.close()
+            return
+    
         # Check if the destination is blocked, close the connection if it is
         if ((MODE == 'DENYLIST' and dest_ip in self.filter_list)
             or (MODE == 'ALLOWLIST' and dest_ip not in self.filter_list)):
@@ -106,26 +116,40 @@ class ProxyServer:
             self.http_status(client_socket, "403 Site Blocked")
             client_socket.close()
             return
-
+        
         # Use the dynamic domain checker to ensure the domain is safe
-        if (self.dynamic_ip_filter.FilterIp(dest_ip)):
-            log(3, f"Blocked {dest[0]} ({dest_ip}) with dynamic filter")
+        if (self.dynamic_url_filter.FilterURL(request_url)):
+            # log(3, f"Blocked {dest[0]} ({dest_ip}) with dynamic filter")
             self.http_status(client_socket, "403 Site Blocked")
             client_socket.close()
             return
+            
 
+        # Forward HTTPS and cache HTTP
         if request_verb == 'CONNECT': # HTTPS
             self.https_forward(client_socket, request_data, dest)
         else: # HTTP
             content = self.cache.get(request_url)
             if content is not None:
-                log(1, f"HTTP: cache hit {request_url}")
+                log(4, f"Cache hit for {request_url}")
                 client_socket.sendall(content)
             else:
+                log(4, f"Cache miss for {request_url}")
                 self.http_forward(client_socket, request_data, dest)
 
         client_socket.close()
 
+    def strip_port(self, url):
+        prefix = 'https://'
+        if url.startswith('http://'):
+            prefix = 'http://'
+            url[7:]
+        if url.startswith('https://'):
+            prefix = 'https://'
+            url[8:]
+        url = url.split(':')[0]
+        return prefix + url
+        
 
     def http_forward(self, client_socket, request_data, dest):
         """Handle a plain HTTP request by forwarding it to the destination"""
@@ -136,7 +160,7 @@ class ProxyServer:
             dest_socket.connect(dest)
         except Exception as e:
             log(0, f"HTTP: {verb} {url} - could not connect to port {dest[1]}")
-            log(-1, str(e))
+            log(-1, f"[ERR IN HTTP FORWARD] - {str(e)}")
             self.http_status(client_socket, "502 Connection Error")
             client_socket.close()
             return
@@ -173,7 +197,7 @@ class ProxyServer:
             dest_socket.connect(dest)
         except Exception as e:
             log(0, f"HTTPS: could not connect to {dest[0]}:{dest[1]}")
-            log(-1, str(e))
+            log(-1, f"[ERR IN HTTPS FORWARD] - {str(e)}")
             self.http_status(client_socket, "502 Connection Error")
             client_socket.close()
             return
@@ -182,26 +206,36 @@ class ProxyServer:
 
         both_sockets = [client_socket, dest_socket]
         first = True
-        while True:
-            # wait for one or more sockets to be ready for I/O
-            r_ready, _, x_ready = select.select(both_sockets, [], both_sockets, TIMEOUT)
-            if x_ready or not r_ready:
-                dest_socket.close()
-                client_socket.close()
-                log(1, f"HTTPS: done receiving {dest[0]}:{dest[1]}")
-                return
-            for sock1 in r_ready: # for each one ready to send, forward its data
-                sock2 = dest_socket if sock1 is client_socket else client_socket
-                content = sock1.recv(BUFFER_SIZE)
-                if not content:
+
+        try:
+
+            while True:
+                # wait for one or more sockets to be ready for I/O
+                r_ready, _, x_ready = select.select(both_sockets, [], both_sockets, TIMEOUT)
+                if x_ready or not r_ready:
                     dest_socket.close()
                     client_socket.close()
-                    log(1, f"HTTPS: failed to receive {dest[0]}:{dest[1]}")
+                    log(1, f"HTTPS: done receiving {dest[0]}:{dest[1]}")
                     return
-                if first and sock1 is dest_socket:
-                    log(1, f"HTTPS: receiving from {dest[0]}:{dest[1]}")
-                    first = False
-                sock2.sendall(content)
+                for sock1 in r_ready: # for each one ready to send, forward its data
+                    sock2 = dest_socket if sock1 is client_socket else client_socket
+                    content = sock1.recv(BUFFER_SIZE)
+                    if not content:
+                        dest_socket.close()
+                        client_socket.close()
+                        log(1, f"HTTPS: failed to receive {dest[0]}:{dest[1]}")
+                        return
+                    if first and sock1 is dest_socket:
+                        log(1, f"HTTPS: receiving from {dest[0]}:{dest[1]}")
+                        first = False
+                    sock2.sendall(content)
+
+        except Exception as e:
+            log(0, f"HTTPS: error in {dest[0]}:{dest[1]}")
+            log(-1, f"[ERR IN HTTPS FORWARD] - {str(e)}")
+            dest_socket.close()
+            client_socket.close()
+            return
 
 
     def http_status(self, client_socket, status_msg):

@@ -1,6 +1,7 @@
 import time
 from collections import OrderedDict, namedtuple
 from threading import Lock
+from log import log
 
 Entry = namedtuple('Entry', ['created', 'size', 'content'])
 

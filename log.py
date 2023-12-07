@@ -6,7 +6,7 @@
 # 3: dynamic filtering info
 # 4: cache info
 
-LOG_OPTIONS = [1]
+LOG_OPTIONS = [-1,3]
 
 def log(level, msg):
         """
