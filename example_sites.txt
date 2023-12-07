@@ -1,4 +1,0 @@
-http://neverssl.com/
-http://captive.apple.com/
-http://detectportal.firefox.com/success.txt
-http://badssl.com/
