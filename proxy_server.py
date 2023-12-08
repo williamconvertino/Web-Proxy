@@ -21,7 +21,7 @@ CACHE_TTL = 60 # seconds
 
 MODE = 'DENYLIST'
 
-DYNAMIC_FILTER = False
+DYNAMIC_FILTER = True
 
 class ProxyServer:
 

@@ -11,18 +11,20 @@ class DynamicURLFilter:
         self.unverifyable_URLs = set()
         self.banned_phrases = []
         
+        # Loads banned phrases from file
         with open('banned_phrases.txt', 'r') as file:
             lines = file.readlines()
         
         for line in lines:
-            if line != '' and line != '\n':
+            if line != '' and line != '\n' and not line.startswith('#'):
                 self.banned_phrases.append(line.strip().lower())
 
+        # Loads encoded phrases -> essentially just so you dont need to store a bunch of bad words in plaintext 
         with open('banned_phrases_encoded.txt', 'r') as file:
             lines = file.readlines()
         
         for line in lines:
-            if line != '' and line != '\n':
+            if line != '' and line != '\n' and not line.startswith('#'):
                 self.banned_phrases.append(decode_word(line.strip()).lower())
 
     def SetTrustLevel(self, request_url, trust_level):
